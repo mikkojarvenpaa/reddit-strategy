@@ -42,8 +42,8 @@ router.get(
       throw new AppError(400, 'Subreddit name and post ID are required');
     }
 
-    const comments = await redditService.getPostComments(name, postId);
-    res.json({ comments });
+    const { post, comments } = await redditService.getPostComments(name, postId);
+    res.json({ post, comments });
   })
 );
 

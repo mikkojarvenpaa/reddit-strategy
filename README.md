@@ -6,7 +6,7 @@ A full-stack web application that helps content creators and strategists researc
 
 - **Subreddit Analysis**: Search and analyze subreddits to understand engagement patterns and common topics
 - **Post Discovery**: Browse top-performing posts to understand what resonates with communities
-- **AI-Powered Idea Generation**: Use Claude AI to generate post and comment ideas tailored to specific subreddits
+- **AI-Powered Idea Generation**: Use OpenAI to generate post and comment ideas tailored to specific subreddits
 - **Tone Customization**: Generate ideas with different tones (professional, casual, humorous, informative, controversial)
 - **Easy Copy**: One-click copy functionality for generated content ideas
 
@@ -16,7 +16,7 @@ A full-stack web application that helps content creators and strategists researc
 - **Node.js** with Express.js framework
 - **TypeScript** for type safety
 - **Reddit API** for subreddit data
-- **Claude AI API** for content generation
+- **OpenAI API** for content generation
 - **Axios** for HTTP requests
 
 ### Frontend
@@ -77,7 +77,7 @@ reddit-strategy/
 ### Prerequisites
 - Node.js 18+ and npm
 - Reddit API credentials
-- Anthropic API key
+- OpenAI API key
 
 ### Setup Instructions
 
@@ -100,7 +100,9 @@ reddit-strategy/
      ```
      REDDIT_CLIENT_ID=your_reddit_app_id
      REDDIT_CLIENT_SECRET=your_reddit_app_secret
-     ANTHROPIC_API_KEY=your_anthropic_api_key
+     OPENAI_API_KEY=your_openai_api_key
+     # Optional: override the default model
+     # OPENAI_MODEL=gpt-4o-mini
      ```
 
 4. **Start the development server**
@@ -152,11 +154,11 @@ reddit-strategy/
 3. Get your Client ID and Client Secret
 4. Set redirect URI to `http://localhost:3001/auth/reddit/callback`
 
-## Getting Anthropic API Key
+## Getting OpenAI API Key
 
-1. Visit https://console.anthropic.com
-2. Create an API key in your account settings
-3. Add it to your `.env` file
+1. Visit https://platform.openai.com/account/api-keys
+2. Create a new secret key (or reuse an existing one)
+3. Add it to your backend `.env` file as `OPENAI_API_KEY`
 
 ## Usage
 

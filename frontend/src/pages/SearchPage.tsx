@@ -1,8 +1,9 @@
 import { useState } from 'react';
 import { useAppStore } from '../store';
-import { redditAPI } from '../services/api';
+import { redditAPI, aiAPI } from '../services/api';
 import SubredditCard from '../components/SubredditCard';
 import PostCard from '../components/PostCard';
+import CommentInsights from '../components/CommentInsights';
 import './SearchPage.css';
 
 export default function SearchPage() {
@@ -11,8 +12,38 @@ export default function SearchPage() {
   const [selectedSubreddit, setSelectedSubreddit] = useState('');
   const [subredditAnalysis, setSubredditAnalysis] = useState<any>(null);
   const [showResults, setShowResults] = useState(false);
+  const [insightsLoading, setInsightsLoading] = useState(false);
+  const [insightsError, setInsightsError] = useState<string | null>(null);
 
-  const { isLoading, setIsLoading, error, setError } = useAppStore();
+  const {
+    isLoading,
+    setIsLoading,
+    error,
+    setError,
+    setGeneratedIdeas,
+    setIdeaContext,
+    commentInsights,
+    setCommentInsights,
+  } = useAppStore();
+
+  const fetchCommentInsights = async (subredditName: string) => {
+    if (!subredditName) {
+      setCommentInsights(null);
+      return;
+    }
+
+    try {
+      setInsightsLoading(true);
+      setInsightsError(null);
+      const response = await aiAPI.getCommentInsights(subredditName);
+      setCommentInsights(response.data.insights);
+    } catch (err: any) {
+      setInsightsError(err.response?.data?.error || 'Failed to fetch community insights');
+      setCommentInsights(null);
+    } finally {
+      setInsightsLoading(false);
+    }
+  };
 
   const handleSearch = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -26,16 +57,31 @@ export default function SearchPage() {
       setIsLoading(true);
       setError(null);
 
+      setGeneratedIdeas([]);
+      setIdeaContext(null);
+      setCommentInsights(null);
+      setInsightsError(null);
+
+      const normalizedSubreddit = selectedSubreddit?.trim();
+
       if (searchQuery) {
         const response = await redditAPI.searchSubreddit(
-          selectedSubreddit || searchQuery.split('/')[0],
+          normalizedSubreddit || searchQuery.split('/')[0],
           searchQuery
         );
         setSearchResults(response.data.results);
+        if (normalizedSubreddit) {
+          await fetchCommentInsights(normalizedSubreddit);
+        }
       } else {
-        const response = await redditAPI.getSubredditAnalysis(selectedSubreddit);
+        if (!normalizedSubreddit) {
+          setError('Subreddit name is required to fetch latest posts');
+          return;
+        }
+        const response = await redditAPI.getSubredditAnalysis(normalizedSubreddit);
         setSubredditAnalysis(response.data);
-        setSearchResults(response.data.topPosts);
+        setSearchResults(response.data.recentPosts);
+        await fetchCommentInsights(normalizedSubreddit);
       }
 
       setShowResults(true);
@@ -51,10 +97,15 @@ export default function SearchPage() {
     try {
       setIsLoading(true);
       setError(null);
+      setGeneratedIdeas([]);
+      setIdeaContext(null);
+      setCommentInsights(null);
+      setInsightsError(null);
       const response = await redditAPI.getSubredditAnalysis(subreddit);
       setSubredditAnalysis(response.data);
-      setSearchResults(response.data.topPosts);
+      setSearchResults(response.data.recentPosts);
       setShowResults(true);
+      await fetchCommentInsights(subreddit);
     } catch (err: any) {
       setError(err.response?.data?.error || 'Failed to fetch subreddit data');
     } finally {
@@ -99,23 +150,32 @@ export default function SearchPage() {
       </div>
 
       {subredditAnalysis && (
-        <div className="analysis-section">
-          <SubredditCard analysis={subredditAnalysis} />
-        </div>
+        <>
+          <div className="analysis-section">
+            <SubredditCard analysis={subredditAnalysis} />
+          </div>
+          <CommentInsights
+            insights={commentInsights}
+            subreddit={subredditAnalysis.subreddit}
+            isLoading={insightsLoading}
+            error={insightsError}
+          />
+        </>
       )}
 
       {showResults && searchResults.length > 0 && (
         <div className="results-section">
-          <h3>Top Posts</h3>
-          <div className="posts-grid">
+          <h3>Newest Posts</h3>
+          <ul className="posts-list">
             {searchResults.map((post: any) => (
               <PostCard
                 key={post.id}
                 post={post}
-                subreddit={selectedSubreddit}
+                subreddit={selectedSubreddit || post.subreddit}
               />
             ))}
-          </div>
+          </ul>
+
         </div>
       )}
 
@@ -124,6 +184,7 @@ export default function SearchPage() {
           <p>No results found. Try a different search query.</p>
         </div>
       )}
+
     </div>
   );
 }

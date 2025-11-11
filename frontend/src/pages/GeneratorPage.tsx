@@ -6,23 +6,24 @@ import './GeneratorPage.css';
 
 export default function GeneratorPage() {
   const [subreddit, setSubreddit] = useState('');
-  const [type, setType] = useState<'post' | 'comment'>('post');
   const [context, setContext] = useState('');
   const [tone, setTone] = useState('professional');
-  const [postId, setPostId] = useState('');
 
-  const { isLoading, setIsLoading, error, setError, generatedIdeas, setGeneratedIdeas } = useAppStore();
+  const {
+    isLoading,
+    setIsLoading,
+    error,
+    setError,
+    generatedIdeas,
+    setGeneratedIdeas,
+    setIdeaContext,
+  } = useAppStore();
 
   const handleGenerate = async (e: React.FormEvent) => {
     e.preventDefault();
 
     if (!subreddit) {
       setError('Subreddit is required');
-      return;
-    }
-
-    if (type === 'comment' && !postId) {
-      setError('Post ID is required for comment generation');
       return;
     }
 
@@ -34,13 +35,12 @@ export default function GeneratorPage() {
         subreddit,
         context: context || undefined,
         tone: tone || undefined,
-        ...(type === 'comment' && { postId }),
       };
 
-      const response =
-        type === 'post' ? await aiAPI.generatePostIdeas(data) : await aiAPI.generateCommentIdeas(data as any);
+      const response = await aiAPI.generatePostIdeas(data);
 
       setGeneratedIdeas(response.data.ideas);
+      setIdeaContext({ type: 'post', subreddit });
     } catch (err: any) {
       setError(err.response?.data?.error || 'Failed to generate ideas');
     } finally {
@@ -67,31 +67,6 @@ export default function GeneratorPage() {
           </div>
 
           <div className="form-group">
-            <label htmlFor="type">Content Type</label>
-            <select
-              id="type"
-              value={type}
-              onChange={(e) => setType(e.target.value as 'post' | 'comment')}
-            >
-              <option value="post">Post</option>
-              <option value="comment">Comment</option>
-            </select>
-          </div>
-
-          {type === 'comment' && (
-            <div className="form-group">
-              <label htmlFor="postId">Post ID</label>
-              <input
-                id="postId"
-                type="text"
-                placeholder="Reddit post ID"
-                value={postId}
-                onChange={(e) => setPostId(e.target.value)}
-              />
-            </div>
-          )}
-
-          <div className="form-group">
             <label htmlFor="tone">Tone</label>
             <select value={tone} onChange={(e) => setTone(e.target.value)}>
               <option value="professional">Professional</option>
@@ -114,7 +89,7 @@ export default function GeneratorPage() {
           </div>
 
           <button type="submit" disabled={isLoading} className="btn-primary">
-            {isLoading ? 'Generating...' : 'Generate Ideas'}
+            {isLoading ? 'Generating...' : 'Generate Post Ideas'}
           </button>
         </form>
 
@@ -126,7 +101,7 @@ export default function GeneratorPage() {
           <h3>Generated Ideas</h3>
           <div className="ideas-grid">
             {generatedIdeas.map((idea, index) => (
-              <IdeaCard key={index} idea={idea} index={index} type={type} />
+              <IdeaCard key={index} idea={idea} index={index} type="post" />
             ))}
           </div>
         </div>

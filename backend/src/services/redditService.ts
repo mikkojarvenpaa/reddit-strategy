@@ -1,4 +1,5 @@
 import axios from 'axios';
+import { URL } from 'url';
 import { RedditPost, RedditComment, SubredditAnalysis, RedditAuthToken } from '../types/index.js';
 
 const REDDIT_API_BASE = 'https://oauth.reddit.com';
@@ -31,9 +32,9 @@ class RedditService {
         }
       );
 
-      this.accessToken = response.data.access_token;
-      this.tokenExpiresAt = now + response.data.expires_in * 1000;
-      return this.accessToken;
+  this.accessToken = response.data.access_token;
+  this.tokenExpiresAt = now + response.data.expires_in * 1000;
+  return this.accessToken!;
     } catch (error) {
       console.error('Failed to get Reddit access token:', error);
       throw new Error('Failed to authenticate with Reddit API');
@@ -44,13 +45,12 @@ class RedditService {
     const token = await this.getAccessToken();
 
     try {
-      // Fetch top posts
+      // Fetch newest posts
       const postsResponse = await axios.get(
-        `${REDDIT_API_BASE}/r/${subreddit}/top`,
+        `${REDDIT_API_BASE}/r/${subreddit}/new`,
         {
           params: {
-            t: 'week',
-            limit: 50,
+            limit: 20,
           },
           headers: {
             Authorization: `Bearer ${token}`,
@@ -81,7 +81,7 @@ class RedditService {
 
       return {
         subreddit,
-        topPosts: posts.slice(0, 10),
+        recentPosts: posts,
         commonTopics: topics,
         engagementPatterns,
         recentAnalyzedAt: new Date(),
@@ -89,6 +89,40 @@ class RedditService {
     } catch (error) {
       console.error(`Failed to fetch subreddit data for ${subreddit}:`, error);
       throw new Error(`Failed to fetch data from r/${subreddit}`);
+    }
+  }
+
+  async getTopPosts(subreddit: string, limit = 10): Promise<RedditPost[]> {
+    const token = await this.getAccessToken();
+
+    try {
+      const response = await axios.get(`${REDDIT_API_BASE}/r/${subreddit}/top`, {
+        params: {
+          t: 'week',
+          limit,
+        },
+        headers: {
+          Authorization: `Bearer ${token}`,
+          'User-Agent': 'RedditAIStrategy/1.0',
+        },
+      });
+
+      return response.data.data.children.map((child: any) => ({
+        id: child.data.id,
+        title: child.data.title,
+        content: child.data.selftext,
+        author: child.data.author,
+        subreddit: child.data.subreddit,
+        upvotes: child.data.ups,
+        downvotes: child.data.downs,
+        comments: child.data.num_comments,
+        createdAt: new Date(child.data.created_utc * 1000),
+        url: child.data.url,
+        score: child.data.score,
+      })) as RedditPost[];
+    } catch (error) {
+      console.error(`Failed to fetch top posts for ${subreddit}:`, error);
+      throw new Error(`Failed to fetch top posts from r/${subreddit}`);
     }
   }
 
@@ -130,12 +164,19 @@ class RedditService {
     }
   }
 
-  async getPostComments(subreddit: string, postId: string): Promise<RedditComment[]> {
+  // Return both the parent post and its top comments. The Reddit comments endpoint
+  // returns an array where index 0 contains the post listing and index 1 contains comments.
+  async getPostComments(subreddit: string, postId: string): Promise<{ post: RedditPost | null; comments: RedditComment[] }> {
     const token = await this.getAccessToken();
+    const normalizedPostId = this.extractPostId(postId);
+
+    if (!normalizedPostId) {
+      throw new Error('Invalid Reddit post ID');
+    }
 
     try {
       const response = await axios.get(
-        `${REDDIT_API_BASE}/r/${subreddit}/comments/${postId}`,
+        `${REDDIT_API_BASE}/r/${subreddit}/comments/${normalizedPostId}`,
         {
           params: {
             limit: 50,
@@ -148,9 +189,28 @@ class RedditService {
         }
       );
 
+      // Extract post info from response.data[0]
+      const postData = response.data[0]?.data?.children?.[0]?.data;
+
+      const post: RedditPost | null = postData
+        ? {
+            id: postData.id,
+            title: postData.title,
+            content: postData.selftext,
+            author: postData.author,
+            subreddit: postData.subreddit,
+            upvotes: postData.ups,
+            downvotes: postData.downs,
+            comments: postData.num_comments,
+            createdAt: new Date(postData.created_utc * 1000),
+            url: postData.url,
+            score: postData.score,
+          }
+        : null;
+
       const commentsData = response.data[1]?.data?.children || [];
 
-      return commentsData
+      const comments = commentsData
         .filter((child: any) => child.kind === 't1') // Only comment objects
         .map((child: any) => ({
           id: child.data.id,
@@ -162,6 +222,8 @@ class RedditService {
           createdAt: new Date(child.data.created_utc * 1000),
           score: child.data.score,
         })) as RedditComment[];
+
+      return { post, comments };
     } catch (error) {
       console.error(`Failed to fetch comments for post ${postId}:`, error);
       throw new Error('Failed to fetch comments');
@@ -196,6 +258,49 @@ class RedditService {
       avgComments: Math.round(avgComments),
       peakHours: [], // Can be expanded with timestamp analysis
     };
+  }
+
+  private extractPostId(postId: string): string {
+    if (!postId) {
+      return '';
+    }
+
+    const trimmed = postId.trim();
+
+    try {
+      const url = new URL(trimmed);
+      const host = url.hostname.toLowerCase();
+
+      if (host === 'redd.it') {
+        const shortId = url.pathname.replace(/^\//, '').split('/')[0];
+        if (shortId) {
+          return shortId;
+        }
+      }
+
+      if (host.endsWith('reddit.com')) {
+        const segments = url.pathname.split('/').filter(Boolean);
+        const commentsIndex = segments.findIndex((segment) => segment === 'comments');
+
+        if (commentsIndex !== -1 && segments[commentsIndex + 1]) {
+          return segments[commentsIndex + 1];
+        }
+      }
+    } catch {
+      // Not a URL; continue with regex fallbacks
+    }
+
+    const fullNameMatch = trimmed.match(/^t3_([a-z0-9]+)/i);
+    if (fullNameMatch?.[1]) {
+      return fullNameMatch[1];
+    }
+
+    const permalinkMatch = trimmed.match(/comments\/([a-z0-9]+)/i);
+    if (permalinkMatch?.[1]) {
+      return permalinkMatch[1];
+    }
+
+    return trimmed;
   }
 }
 

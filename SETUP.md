@@ -8,7 +8,7 @@ Before you start, make sure you have:
 - Node.js v18.0.0 or higher
 - npm 9+ or yarn
 - A Reddit account
-- An Anthropic account
+- An OpenAI account
 
 ## Step 1: Get Reddit API Credentials
 
@@ -31,16 +31,15 @@ Before you start, make sure you have:
      - **Client ID**: First long string (under app name)
      - **Client Secret**: The "secret" field below
 
-## Step 2: Get Anthropic API Key
+## Step 2: Get OpenAI API Key
 
-1. **Visit Anthropic Console**
-   - Go to https://console.anthropic.com
+1. **Visit OpenAI Console**
+   - Go to https://platform.openai.com/account/api-keys
 
 2. **Create API Key**
-   - Click on your profile/account settings
-   - Navigate to "API Keys"
-   - Click "Create Key"
+   - Click "Create new secret key"
    - Copy the key (you won't see it again)
+   - Optionally create a dedicated key for this project
 
 ## Step 3: Clone and Install
 
@@ -86,7 +85,9 @@ cd ..
    REDDIT_CLIENT_SECRET=your_client_secret_here
    REDDIT_REDIRECT_URI=http://localhost:3001/auth/reddit/callback
 
-   ANTHROPIC_API_KEY=your_anthropic_api_key_here
+   OPENAI_API_KEY=your_openai_api_key_here
+   # Optional: override the default model (gpt-4o-mini)
+   # OPENAI_MODEL=gpt-4o-mini
 
    DATABASE_URL=postgresql://user:password@localhost:5432/reddit_strategy
    ```
@@ -177,12 +178,12 @@ cd ../frontend && rm -rf node_modules package-lock.json && npm install
 
 2. **Check API credentials**
    - Make sure Reddit Client ID and Secret are correct
-   - Make sure Anthropic API key is valid
+   - Make sure OpenAI API key is valid
 
 3. **Check network**
    - Ensure you have internet connection
    - Check if Reddit API is accessible: `curl https://oauth.reddit.com`
-   - Check if Anthropic API is accessible: `curl https://api.anthropic.com`
+   - Check if OpenAI API is accessible: `curl https://api.openai.com/v1/models`
 
 ### CORS Errors
 
@@ -243,7 +244,8 @@ npm run type-check       # Check types
 | `REDDIT_CLIENT_ID` | Reddit app ID | abc123xyz |
 | `REDDIT_CLIENT_SECRET` | Reddit app secret | secret456 |
 | `REDDIT_REDIRECT_URI` | OAuth callback URL | http://localhost:3001/auth/reddit/callback |
-| `ANTHROPIC_API_KEY` | Claude API key | sk-ant-xxx |
+| `OPENAI_API_KEY` | OpenAI API key | sk-proj-... |
+| `OPENAI_MODEL` | (Optional) Override default model | gpt-4o-mini |
 | `DATABASE_URL` | PostgreSQL connection | postgresql://... |
 
 ## Next Steps

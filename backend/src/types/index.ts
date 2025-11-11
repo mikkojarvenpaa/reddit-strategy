@@ -25,7 +25,7 @@ export interface RedditComment {
 
 export interface SubredditAnalysis {
   subreddit: string;
-  topPosts: RedditPost[];
+  recentPosts: RedditPost[];
   commonTopics: string[];
   engagementPatterns: {
     avgUpvotes: number;
@@ -33,6 +33,16 @@ export interface SubredditAnalysis {
     peakHours: string[];
   };
   recentAnalyzedAt: Date;
+}
+
+export interface CommentInsights {
+  subreddit: string;
+  instructions: string[];
+  respectedQualities: string[];
+  pitfalls: string[];
+  exampleCommentStyles: string[];
+  analyzedPosts: number;
+  generatedAt: string;
 }
 
 export interface GeneratedIdea {

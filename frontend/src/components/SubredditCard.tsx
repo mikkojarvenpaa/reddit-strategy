@@ -3,7 +3,7 @@ import './Card.css';
 interface SubredditCardProps {
   analysis: {
     subreddit: string;
-    topPosts: any[];
+    recentPosts: any[];
     commonTopics: string[];
     engagementPatterns: {
       avgUpvotes: number;
@@ -44,8 +44,8 @@ export default function SubredditCard({ analysis }: SubredditCardProps) {
       </div>
 
       <div className="card-section">
-        <h4>Top Posts Count</h4>
-        <p>{analysis.topPosts.length} posts analyzed</p>
+        <h4>Recent Posts Loaded</h4>
+        <p>{analysis.recentPosts.length} posts analyzed</p>
       </div>
     </div>
   );

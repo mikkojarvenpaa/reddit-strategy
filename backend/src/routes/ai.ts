@@ -18,10 +18,10 @@ router.post(
     // Fetch current subreddit data
     const analysis = await redditService.getSubredditData(body.subreddit);
 
-    // Generate ideas using Claude
+    // Generate ideas using OpenAI
     const ideas = await aiService.generatePostIdeas(
       body,
-      analysis.topPosts,
+      analysis.recentPosts,
       analysis.commonTopics
     );
 
@@ -42,18 +42,16 @@ router.post(
       throw new AppError(400, 'Subreddit and postId are required');
     }
 
-    // Fetch the post and its comments
-    const analysis = await redditService.getSubredditData(body.subreddit);
-    const post = analysis.topPosts[0]; // In real app, fetch specific post
+    // Fetch the specific post and its comments from Reddit
+    const { post, comments } = await redditService.getPostComments(body.subreddit, body.postId);
 
     if (!post) {
       throw new AppError(404, 'Post not found');
     }
 
-    const comments = await redditService.getPostComments(body.subreddit, body.postId);
     const topCommentBodies = comments.map((c) => c.body);
 
-    // Generate comment ideas using Claude
+    // Generate comment ideas using OpenAI
     const ideas = await aiService.generateCommentIdeas(body, post, topCommentBodies);
 
     res.json({
@@ -61,6 +59,24 @@ router.post(
       postId: body.postId,
       type: 'comment',
       ...ideas,
+    });
+  })
+);
+
+router.get(
+  '/comment-insights/:subreddit',
+  asyncHandler(async (req: Request, res: Response) => {
+    const { subreddit } = req.params;
+
+    if (!subreddit) {
+      throw new AppError(400, 'Subreddit is required');
+    }
+
+    const insights = await aiService.generateCommentInsights(subreddit);
+
+    res.json({
+      subreddit,
+      insights,
     });
   })
 );

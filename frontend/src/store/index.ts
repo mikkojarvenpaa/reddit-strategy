@@ -2,7 +2,7 @@ import { create } from 'zustand';
 
 interface SubredditData {
   name: string;
-  topPosts: any[];
+  recentPosts: any[];
   commonTopics: string[];
   engagementPatterns: any;
 }
@@ -10,6 +10,23 @@ interface SubredditData {
 interface GeneratedIdea {
   content: string;
   reasoning: string;
+}
+
+interface IdeaContext {
+  type: 'post' | 'comment';
+  subreddit: string;
+  postId?: string;
+  postTitle?: string;
+}
+
+interface CommentInsights {
+  subreddit: string;
+  instructions: string[];
+  respectedQualities: string[];
+  pitfalls: string[];
+  exampleCommentStyles: string[];
+  analyzedPosts: number;
+  generatedAt: string;
 }
 
 interface AppState {
@@ -27,6 +44,12 @@ interface AppState {
 
   selectedIdea: GeneratedIdea | null;
   setSelectedIdea: (idea: GeneratedIdea | null) => void;
+
+  ideaContext: IdeaContext | null;
+  setIdeaContext: (context: IdeaContext | null) => void;
+
+  commentInsights: CommentInsights | null;
+  setCommentInsights: (insights: CommentInsights | null) => void;
 }
 
 export const useAppStore = create<AppState>((set) => ({
@@ -44,4 +67,10 @@ export const useAppStore = create<AppState>((set) => ({
 
   selectedIdea: null,
   setSelectedIdea: (idea) => set({ selectedIdea: idea }),
+
+  ideaContext: null,
+  setIdeaContext: (context) => set({ ideaContext: context }),
+
+  commentInsights: null,
+  setCommentInsights: (insights) => set({ commentInsights: insights }),
 }));
