@@ -1,40 +1,48 @@
 import axios from 'axios';
 import { URL } from 'url';
-import { RedditPost, RedditComment, SubredditAnalysis, RedditAuthToken } from '../types/index.js';
+import postCommentsCache from './postCommentsCache.js';
+import { withRetry, sleep } from '../utils/retry.js';
+import { RedditPost, RedditComment, SubredditAnalysis } from '../types/index.js';
 
 const REDDIT_API_BASE = 'https://oauth.reddit.com';
 const REDDIT_AUTH_URL = 'https://www.reddit.com/api/v1/access_token';
+const REQUEST_WINDOW_MS = 60 * 1000;
+const TOKEN_EXPIRY_SKEW_MS = 60 * 1000;
 
 class RedditService {
   private accessToken: string | null = null;
   private tokenExpiresAt: number = 0;
+  private requestTimestamps: number[] = [];
+  private maxRequestsPerMinute = Number(process.env.REDDIT_MAX_REQ_PER_MINUTE ?? 45);
 
   async getAccessToken(): Promise<string> {
     const now = Date.now();
-    if (this.accessToken && this.tokenExpiresAt > now) {
+    if (this.accessToken && this.tokenExpiresAt - TOKEN_EXPIRY_SKEW_MS > now) {
       return this.accessToken;
     }
 
     try {
-      const response = await axios.post(
-        REDDIT_AUTH_URL,
-        new URLSearchParams({
-          grant_type: 'client_credentials',
-        }),
-        {
-          auth: {
-            username: process.env.REDDIT_CLIENT_ID!,
-            password: process.env.REDDIT_CLIENT_SECRET!,
-          },
-          headers: {
-            'User-Agent': 'RedditAIStrategy/1.0',
-          },
-        }
+      const response = await this.executeWithRateLimit(() =>
+        axios.post(
+          REDDIT_AUTH_URL,
+          new URLSearchParams({
+            grant_type: 'client_credentials',
+          }),
+          {
+            auth: {
+              username: process.env.REDDIT_CLIENT_ID!,
+              password: process.env.REDDIT_CLIENT_SECRET!,
+            },
+            headers: {
+              'User-Agent': 'RedditAIStrategy/1.0',
+            },
+          }
+        )
       );
 
-  this.accessToken = response.data.access_token;
-  this.tokenExpiresAt = now + response.data.expires_in * 1000;
-  return this.accessToken!;
+      this.accessToken = response.data.access_token;
+      this.tokenExpiresAt = Date.now() + response.data.expires_in * 1000;
+      return this.accessToken;
     } catch (error) {
       console.error('Failed to get Reddit access token:', error);
       throw new Error('Failed to authenticate with Reddit API');
@@ -46,9 +54,8 @@ class RedditService {
 
     try {
       // Fetch newest posts
-      const postsResponse = await axios.get(
-        `${REDDIT_API_BASE}/r/${subreddit}/new`,
-        {
+      const postsResponse = await this.executeWithRateLimit(() =>
+        axios.get(`${REDDIT_API_BASE}/r/${subreddit}/new`, {
           params: {
             limit: 20,
           },
@@ -56,7 +63,7 @@ class RedditService {
             Authorization: `Bearer ${token}`,
             'User-Agent': 'RedditAIStrategy/1.0',
           },
-        }
+        })
       );
 
       const posts = postsResponse.data.data.children.map((child: any) => ({
@@ -96,16 +103,18 @@ class RedditService {
     const token = await this.getAccessToken();
 
     try {
-      const response = await axios.get(`${REDDIT_API_BASE}/r/${subreddit}/top`, {
-        params: {
-          t: 'week',
-          limit,
-        },
-        headers: {
-          Authorization: `Bearer ${token}`,
-          'User-Agent': 'RedditAIStrategy/1.0',
-        },
-      });
+      const response = await this.executeWithRateLimit(() =>
+        axios.get(`${REDDIT_API_BASE}/r/${subreddit}/top`, {
+          params: {
+            t: 'week',
+            limit,
+          },
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'User-Agent': 'RedditAIStrategy/1.0',
+          },
+        })
+      );
 
       return response.data.data.children.map((child: any) => ({
         id: child.data.id,
@@ -126,13 +135,53 @@ class RedditService {
     }
   }
 
+  async getTopPostsLast14Days(subreddit: string, limit = 20): Promise<RedditPost[]> {
+    const token = await this.getAccessToken();
+
+    try {
+      const response = await this.executeWithRateLimit(() =>
+        axios.get(`${REDDIT_API_BASE}/r/${subreddit}/top`, {
+          params: {
+            t: 'month',
+            limit: limit * 2,
+          },
+          headers: {
+            Authorization: `Bearer ${token}`,
+            'User-Agent': 'RedditAIStrategy/1.0',
+          },
+        })
+      );
+
+      const fourteenDaysAgo = Date.now() - 14 * 24 * 60 * 60 * 1000;
+
+      return response.data.data.children
+        .map((child: any) => ({
+          id: child.data.id,
+          title: child.data.title,
+          content: child.data.selftext,
+          author: child.data.author,
+          subreddit: child.data.subreddit,
+          upvotes: child.data.ups,
+          downvotes: child.data.downs,
+          comments: child.data.num_comments,
+          createdAt: new Date(child.data.created_utc * 1000),
+          url: child.data.url,
+          score: child.data.score,
+        }))
+        .filter((post: RedditPost) => post.createdAt.getTime() >= fourteenDaysAgo)
+        .slice(0, limit);
+    } catch (error) {
+      console.error(`Failed to fetch top posts (14d) for ${subreddit}:`, error);
+      throw new Error(`Failed to fetch top posts from r/${subreddit}`);
+    }
+  }
+
   async searchSubreddit(subreddit: string, query: string): Promise<RedditPost[]> {
     const token = await this.getAccessToken();
 
     try {
-      const response = await axios.get(
-        `${REDDIT_API_BASE}/r/${subreddit}/search`,
-        {
+      const response = await this.executeWithRateLimit(() =>
+        axios.get(`${REDDIT_API_BASE}/r/${subreddit}/search`, {
           params: {
             q: query,
             sort: 'relevance',
@@ -142,7 +191,7 @@ class RedditService {
             Authorization: `Bearer ${token}`,
             'User-Agent': 'RedditAIStrategy/1.0',
           },
-        }
+        })
       );
 
       return response.data.data.children.map((child: any) => ({
@@ -174,10 +223,15 @@ class RedditService {
       throw new Error('Invalid Reddit post ID');
     }
 
+    const cacheKey = `${subreddit.toLowerCase()}:${normalizedPostId}`;
+    const cached = postCommentsCache.get(cacheKey);
+    if (cached) {
+      return cached;
+    }
+
     try {
-      const response = await axios.get(
-        `${REDDIT_API_BASE}/r/${subreddit}/comments/${normalizedPostId}`,
-        {
+      const response = await this.executeWithRateLimit(() =>
+        axios.get(`${REDDIT_API_BASE}/r/${subreddit}/comments/${normalizedPostId}`, {
           params: {
             limit: 50,
             sort: 'top',
@@ -186,7 +240,7 @@ class RedditService {
             Authorization: `Bearer ${token}`,
             'User-Agent': 'RedditAIStrategy/1.0',
           },
-        }
+        })
       );
 
       // Extract post info from response.data[0]
@@ -223,7 +277,9 @@ class RedditService {
           score: child.data.score,
         })) as RedditComment[];
 
-      return { post, comments };
+      const payload = { post, comments };
+      postCommentsCache.set(cacheKey, payload);
+      return payload;
     } catch (error) {
       console.error(`Failed to fetch comments for post ${postId}:`, error);
       throw new Error('Failed to fetch comments');
@@ -258,6 +314,31 @@ class RedditService {
       avgComments: Math.round(avgComments),
       peakHours: [], // Can be expanded with timestamp analysis
     };
+  }
+
+  /**
+   * Central gate for Reddit API calls so we serialize bursts and retry
+   * automatically when Reddit signals rate or transient failures.
+   */
+  private async executeWithRateLimit<T>(operation: () => Promise<T>): Promise<T> {
+    await this.enforceRateLimit();
+    return withRetry(operation);
+  }
+
+  private async enforceRateLimit() {
+    while (true) {
+      const now = Date.now();
+      this.requestTimestamps = this.requestTimestamps.filter((timestamp) => now - timestamp < REQUEST_WINDOW_MS);
+
+      if (this.requestTimestamps.length < this.maxRequestsPerMinute) {
+        this.requestTimestamps.push(now);
+        return;
+      }
+
+      const waitMs =
+        REQUEST_WINDOW_MS - (now - this.requestTimestamps[0]) + Math.floor(Math.random() * 120);
+      await sleep(waitMs);
+    }
   }
 
   private extractPostId(postId: string): string {

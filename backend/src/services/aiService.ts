@@ -1,7 +1,24 @@
 import OpenAI from 'openai';
 import redditService from './redditService.js';
 import insightsCache from './commentInsightsCache.js';
-import { AIPromptRequest, AIGenerationResponse, RedditPost, CommentInsights } from '../types/index.js';
+import postGuidelinesCache from './postGuidelinesCache.js';
+import noveltyCache from './noveltyCache.js';
+import { withRetry } from '../utils/retry.js';
+import {
+  AIPromptRequest,
+  AIGenerationResponse,
+  RedditPost,
+  CommentInsights,
+  PostGuidelines,
+  PostIdeaExpansionRequest,
+} from '../types/index.js';
+
+interface GenerationOptions {
+  temperature?: number;
+  systemPrompt?: string;
+  presencePenalty?: number;
+  frequencyPenalty?: number;
+}
 
 class AIService {
   private client: OpenAI | null = null;
@@ -21,83 +38,264 @@ class AIService {
     return this.client;
   }
 
-  private async generateJsonResponse(prompt: string, maxTokens: number) {
+  private async generateJsonResponse(prompt: string, maxTokens: number, options: GenerationOptions = {}) {
     const client = this.getClient();
+    const temperature = this.resolveTemperature(options.temperature);
+    const presencePenalty =
+      options.presencePenalty ?? (temperature >= 0.85 ? 0.6 : 0.1);
+    const frequencyPenalty =
+      options.frequencyPenalty ?? (temperature >= 0.85 ? 0.4 : 0);
+    const systemPrompt =
+      options.systemPrompt ||
+      'You are an AI assistant for Reddit strategists. Always respond with valid JSON that exactly matches the schema requested by the user. Do not include Markdown code fences or extra commentary outside of the JSON object.';
 
-    const completion = await client.chat.completions.create({
-      model: this.model,
-      temperature: 0.7,
-      max_tokens: maxTokens,
-      messages: [
-        {
-          role: 'system',
-          content:
-            'You are an AI assistant for Reddit strategists. Always respond with valid JSON that exactly matches the schema requested by the user. Do not include Markdown code fences or extra commentary outside of the JSON object.',
-        },
-        {
-          role: 'user',
-          content: prompt,
-        },
-      ],
-    });
+    // Response-format plus retries keep us compliant with OpenAI JSON mode
+    // while automatically backing off on transient 429s/500s.
+    const completion = await withRetry(() =>
+      client.chat.completions.create({
+        model: this.model,
+        temperature,
+        max_tokens: maxTokens,
+        presence_penalty: presencePenalty,
+        frequency_penalty: frequencyPenalty,
+        response_format: { type: 'json_object' },
+        messages: [
+          {
+            role: 'system',
+            content: systemPrompt,
+          },
+          {
+            role: 'user',
+            content: prompt,
+          },
+        ],
+      })
+    );
 
-    const content = completion.choices[0]?.message?.content?.trim() ?? '';
-    const jsonMatch = content.match(/\{[\s\S]*\}/);
+    const content = completion.choices[0]?.message?.content?.trim();
 
-    if (!jsonMatch) {
+    if (!content) {
       throw new Error('Failed to parse AI response');
     }
 
-    return JSON.parse(jsonMatch[0]);
+    return JSON.parse(content);
   }
 
   async generatePostIdeas(
     request: AIPromptRequest,
-    recentPosts: RedditPost[],
-    commonTopics: string[]
+    guidelines: PostGuidelines
   ): Promise<AIGenerationResponse> {
-    const context = this.buildContext(request, recentPosts, commonTopics);
+    const referenceHighlights = this.buildReferenceSummaries(guidelines.sourcePosts, 4);
+    const extraContext = request.context?.trim();
+    const explorationSeeds = await this.generateExplorationSeeds(request.subreddit, guidelines, extraContext);
+    const baseTemperature = request.temperature
+      ? this.resolveTemperature(request.temperature)
+      : 0.78;
 
-    const prompt = `You are an expert Reddit strategist who understands what content performs well on different subreddits.
+    const attemptGeneration = async (forceBold: boolean) => {
+      const prompt = this.composePostIdeaPrompt({
+        request,
+        guidelines,
+        referenceHighlights,
+        explorationSeeds,
+        extraContext,
+        forceBold,
+      });
 
-Given the following context about r/${request.subreddit}:
-
-${context}
-
-Generate 3 original post ideas that would perform well in this subreddit. For each idea:
-1. Provide a compelling post title
-2. Provide the post content/body
-3. Explain why this would resonate with the community
-
-${request.tone ? `Tone/style: ${request.tone}` : ''}
-
-Format your response as a JSON object with the following structure:
-{
-  "ideas": [
-    {
-      "title": "...",
-      "content": "...",
-      "reasoning": "..."
-    }
-  ],
-  "engagementScore": 8.5,
-  "relevance": 9.0
-}`;
-
-    try {
-      const parsedResponse = await this.generateJsonResponse(prompt, 2048);
+      const parsedResponse = await this.generateJsonResponse(prompt, 2048, {
+        temperature: forceBold ? Math.min(1.05, baseTemperature + 0.2) : baseTemperature,
+      });
 
       return {
         ideas: parsedResponse.ideas.map((idea: any) => ({
-          content: `Title: ${idea.title}\n\n${idea.content}`,
-          reasoning: idea.reasoning,
+          title: idea.title,
+          bullets: idea.bullets || [],
+          inspiration: idea.inspiration || idea.reasoning || '',
+          format: idea.format || idea.structure || '',
+          noveltySignal: idea.noveltySignal || idea.novelty || '',
         })),
         engagementScore: parsedResponse.engagementScore || 7.5,
         relevance: parsedResponse.relevance || 8.0,
       };
+    };
+
+    let lastResult: AIGenerationResponse | null = null;
+    let lastAssessment: { averageScore: number } | null = null;
+
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const forceBold = attempt === 1;
+      const generation = await attemptGeneration(forceBold);
+      lastResult = generation;
+
+      const { novelIdeas, duplicates } = noveltyCache.filterNovelIdeas(request.subreddit, generation.ideas);
+      if (duplicates.length) {
+        console.warn(`Filtered ${duplicates.length} repetitive idea(s) for r/${request.subreddit}`);
+      }
+
+      const ideasForEvaluation = novelIdeas.length ? novelIdeas : generation.ideas;
+      const assessment = await this.assessNovelty(request.subreddit, ideasForEvaluation);
+      lastAssessment = assessment;
+
+      if (assessment.averageScore < 7 && !forceBold) {
+        continue; // run bold attempt
+      }
+
+      noveltyCache.rememberIdeas(request.subreddit, ideasForEvaluation);
+
+      return {
+        ideas: ideasForEvaluation,
+        engagementScore: generation.engagementScore,
+        relevance: generation.relevance,
+        noveltyScore: assessment.averageScore,
+      };
+    }
+
+    if (lastResult) {
+      noveltyCache.rememberIdeas(request.subreddit, lastResult.ideas);
+      return {
+        ...lastResult,
+        noveltyScore: lastAssessment?.averageScore,
+      };
+    }
+
+    throw new Error('Failed to generate post ideas');
+  }
+
+  private async generateGapAnalysis(subreddit: string, dataset: string) {
+    const prompt = `You already studied the top-performing posts in r/${subreddit}.
+
+Dataset:
+${dataset}
+
+Identify what feels missing. Surface angles that the community has NOT seen enough of, or tension points that rarely get resolved.
+
+Return JSON:
+{
+  "underrepresentedAngles": ["..."],
+  "tensionHooks": ["..."]
+}`;
+
+    try {
+      return await this.generateJsonResponse(prompt, 600, { temperature: 0.65 });
     } catch (error) {
-      console.error('Failed to generate post ideas:', error);
-      throw new Error('Failed to generate post ideas');
+      console.error('Failed to generate gap analysis:', error);
+      return { underrepresentedAngles: [], tensionHooks: [] };
+    }
+  }
+
+  async generatePostGuidelines(subreddit: string): Promise<PostGuidelines> {
+    const cached = postGuidelinesCache.get(subreddit);
+    if (cached) {
+      return cached;
+    }
+
+    const posts = await redditService.getTopPostsLast14Days(subreddit, 20);
+
+    if (!posts.length) {
+      throw new Error('Not enough data to build posting guidelines');
+    }
+
+    const dataset = posts
+      .map((post, index) => {
+        const excerpt = this.truncateText(post.content, 400);
+        const flair = post as any;
+        const flairInfo = flair?.link_flair_text ? `\n  Flair: ${flair.link_flair_text}` : '';
+        return `Post ${index + 1}: ${post.title}\n  Upvotes: ${post.upvotes}, Comments: ${post.comments}${flairInfo}\n  Excerpt: ${excerpt || 'N/A'}`;
+      })
+      .join('\n\n');
+
+    const prompt = `You are analyzing the highest-performing posts on r/${subreddit} from the last 14 days.
+
+Given the following posts:
+${dataset}
+
+Extract SPECIFIC posting guidelines that are clearly grounded in these examples. For every bullet you produce, reference a concrete pattern you observed (topic, format, tone, flair, time of day, etc.) so nothing is generic.
+
+Return JSON matching:
+{
+  "recommendations": ["..."],
+  "idealStructures": ["..."],
+  "toneTips": ["..."],
+  "postingTimes": ["..."]
+}
+
+Recommendations must cite observed themes ("Posts about X performed well because Y"). Ideal structures describe the observed layout (hook -> breakdown -> poll, etc.). Tone tips should mention the voice used (e.g., "DMs praised self-deprecating humor"). Posting times should reference patterns ("Most high scorers were posted weekday mornings").`;
+
+    try {
+      const parsed = await this.generateJsonResponse(prompt, 1200, { temperature: 0.55 });
+      const gaps = await this.generateGapAnalysis(subreddit, dataset);
+
+      const guidelines: PostGuidelines = {
+        subreddit,
+        sourcePosts: posts,
+        recommendations: parsed.recommendations || [],
+        idealStructures: parsed.idealStructures || [],
+        toneTips: parsed.toneTips || [],
+        postingTimes: parsed.postingTimes || [],
+        generatedAt: new Date().toISOString(),
+        underrepresentedAngles: gaps.underrepresentedAngles || [],
+        tensionHooks: gaps.tensionHooks || [],
+      };
+
+      postGuidelinesCache.set(subreddit, guidelines);
+
+      return guidelines;
+    } catch (error) {
+      console.error('Failed to generate post guidelines:', error);
+      throw new Error('Failed to generate post guidelines');
+    }
+  }
+
+  async generateFullPost(request: PostIdeaExpansionRequest): Promise<{ title: string; content: string; wordCount: number }> {
+    const guidelines = await this.generatePostGuidelines(request.subreddit);
+
+    const instructionsBlock = request.instructions
+      ? `Custom Instructions (override guidelines if needed):\n${request.instructions}`
+      : 'No additional instructions provided.';
+    const contextBlock = request.context
+      ? `Additional Context from user (must be woven into the narrative):\n${request.context}`
+      : 'No extra context provided.';
+
+    const prompt = `You are writing a Reddit post for r/${request.subreddit} based on the following idea summary:
+
+Title: ${request.idea.title}
+Bullets:
+- ${request.idea.bullets.join('\n- ')}
+
+Inspiration Notes: ${request.idea.inspiration || 'N/A'}
+
+${contextBlock}
+
+Posting Guidelines:
+${this.formatGuidelineSection('Recommendations', guidelines.recommendations, 4)}
+
+${this.formatGuidelineSection('Ideal Structures', guidelines.idealStructures, 4)}
+
+${this.formatGuidelineSection('Tone Tips', guidelines.toneTips, 4)}
+
+${this.formatGuidelineSection('Posting Times', guidelines.postingTimes, 4)}
+
+${instructionsBlock}
+
+Write a full Reddit post (100-500 words). If the idea is primarily a question/conversation starter, aim for 100-200 words. If it shares experience, advice, or story, aim for 250-500 words. Always stay true to the subreddit culture and the requested tone (${request.tone || 'default community tone'}) unless the custom instructions contradict it.
+
+Return JSON:
+{
+  "title": "...",
+  "content": "...",
+  "wordCount": 240
+}`;
+
+    try {
+      const parsed = await this.generateJsonResponse(prompt, 1200);
+      return {
+        title: parsed.title || request.idea.title,
+        content: parsed.content,
+        wordCount: parsed.wordCount || parsed.content?.split(/\s+/).length || 0,
+      };
+    } catch (error) {
+      console.error('Failed to generate full post:', error);
+      throw new Error('Failed to generate full post');
     }
   }
 
@@ -106,6 +304,12 @@ Format your response as a JSON object with the following structure:
     post: RedditPost,
     topComments: string[]
   ): Promise<AIGenerationResponse> {
+    // Trim Reddit comment samples so prompts stay short but still grounded.
+    const referenceComments = topComments
+      .slice(0, 3)
+      .map((comment, index) => `Comment #${index + 1}: ${this.truncateText(comment, 220)}`)
+      .join('\n\n');
+
     const prompt = `You are an expert Redditor who knows how to write engaging, upvoted comments.
 
 Post Title: "${post.title}"
@@ -114,17 +318,16 @@ Current Score: ${post.score} upvotes
 Number of Comments: ${post.comments}
 
 Top Comments (for reference):
-${topComments.slice(0, 3).join('\n\n')}
+${referenceComments}
 
 ${request.context ? `Additional Context: ${request.context}` : ''} 
 
-Generate 3 thoughtful, engaging comment ideas that would likely get upvoted in this thread. Consider:
-- Writing at least 100 words of good grammar without excessive punctuation
-- Adding genuine, non-obvious value and insight
-- Being respectful and following subreddit rules
-- Being innovative and original while mostly sticking to the rules known by the community at r/${request.subreddit}
-- Making sure to avoid bullet points, m-dashes, bold and italics, and the "it's not just Y, it's X" rhetoric device
-- ${request.tone ? `Matching this tone: ${request.tone}` : ''}
+Generate 3 thoughtful, engaging comment ideas that would likely get upvoted in this thread. Focus on:
+- Delivering at least one surprising insight, question, or datapoint per comment
+- Referencing something specific from the OP or top comments so it feels rooted in the discussion
+- Using vivid language (mini-anecdotes, rhetorical questions, or dry humor) when natural
+- Staying respectful of subreddit norms while nudging the conversation somewhere new
+- ${request.tone ? `Matching this tone: ${request.tone}` : 'Matching the subreddit tone organically'}
 
 Format your response as a JSON object:
 {
@@ -139,7 +342,9 @@ Format your response as a JSON object:
 }`;
 
     try {
-      const parsedResponse = await this.generateJsonResponse(prompt, 1500);
+      const parsedResponse = await this.generateJsonResponse(prompt, 1500, {
+        temperature: this.resolveTemperature(request.temperature ?? 0.72),
+      });
 
       return {
         ideas: parsedResponse.ideas,
@@ -248,25 +453,177 @@ Do not overindex on the humor. Keep entries concise (max 2 sentences each) and s
     }
   }
 
-  private buildContext(
-    request: AIPromptRequest,
-    recentPosts: RedditPost[],
-    commonTopics: string[]
-  ): string {
-    let context = `Subreddit: r/${request.subreddit}\n\n`;
+  private async assessNovelty(
+    subreddit: string,
+    ideas: { title?: string; bullets?: string[]; inspiration?: string; content?: string }[]
+  ): Promise<{ averageScore: number; perIdea: { title: string; score: number; notes: string }[]; feedback?: string }> {
+    const ideaBlock = ideas
+      .map((idea, index) => {
+        const bullets = (idea.bullets ?? []).join(' | ');
+        const inspiration = idea.inspiration ? ` [Inspiration: ${idea.inspiration}]` : '';
+        return `${index + 1}. ${idea.title ?? 'Untitled'} — ${bullets || idea.content || ''}${inspiration}`;
+      })
+      .join('\n');
 
-    context += `Common Topics:\n${commonTopics.slice(0, 10).join(', ')}\n\n`;
+    const prompt = `You are a long-time moderator of r/${subreddit}. Rate how surprising each pitch would feel to veterans.
 
-    context += 'Recent Posts:\n';
-    recentPosts.slice(0, 5).forEach((post, index) => {
-      context += `${index + 1}. "${post.title}" - ${post.upvotes} upvotes, ${post.comments} comments\n`;
-    });
+Ideas:
+${ideaBlock}
 
-    if (request.relatedPostId) {
-      context += `\nGenerating ideas related to post: ${request.relatedPostId}`;
+Return JSON:
+{
+  "averageScore": 7.5,
+  "perIdea": [
+    {"title": "...", "score": 8.5, "notes": "..."}
+  ],
+  "feedback": "High-level tips if everything feels safe"
+}
+
+Scores are from 1 (generic) to 10 (mind-blowing). Reward ideas that make bold yet community-friendly moves.`;
+
+    try {
+      return await this.generateJsonResponse(prompt, 600, { temperature: 0.5 });
+    } catch (error) {
+      console.error('Failed to assess novelty:', error);
+      return { averageScore: 7, perIdea: [], feedback: 'Heuristic fallback' };
+    }
+  }
+
+  /**
+   * Limits long guideline arrays so prompts stay compact and easier for the
+   * model to anchor on specific, labeled recommendations.
+   */
+  private formatGuidelineSection(title: string, items: string[], maxItems = 3): string {
+    if (!items.length) {
+      return `${title}: none captured.`;
     }
 
-    return context;
+    const trimmed = items.slice(0, maxItems);
+    return `${title}:\n${trimmed.map((item, index) => `${index + 1}. ${item}`).join('\n')}`;
+  }
+
+  /**
+   * Generates short reference blurbs instead of streaming entire post bodies,
+   * which keeps prompts under token limits but still grounds the AI output.
+   */
+  private buildReferenceSummaries(posts: RedditPost[], maxItems = 3): string[] {
+    return posts.slice(0, maxItems).map((post, index) => {
+      const excerpt = this.truncateText(post.content, 160) || 'No selftext provided.';
+      return `Example ${index + 1}: "${post.title}" (${post.upvotes}↑ / ${post.comments} comments) — ${excerpt}`;
+    });
+  }
+
+  private async generateExplorationSeeds(
+    subreddit: string,
+    guidelines: PostGuidelines,
+    extraContext?: string
+  ): Promise<{ tensions: string[]; whatIfs: string[] }> {
+    const prompt = `You are a creative researcher for r/${subreddit}.
+
+Known guidance:
+- Underrepresented Angles: ${(guidelines.underrepresentedAngles || []).join('; ') || 'n/a'}
+- Tension Hooks: ${(guidelines.tensionHooks || []).join('; ') || 'n/a'}
+${extraContext ? `- User Context: ${extraContext}` : ''}
+
+Brainstorm unexpected jumping-off points before we write posts. Return JSON with two arrays:
+{
+  "tensions": ["short description of unresolved debate"],
+  "whatIfs": ["intriguing what-if or surprising reframing"]
+}
+
+Each entry should be original, opinionated, and reference real community quirks.`;
+
+    try {
+      return await this.generateJsonResponse(prompt, 400, { temperature: 0.95, presencePenalty: 0.6, frequencyPenalty: 0.5 });
+    } catch (error) {
+      console.error('Failed to generate exploration seeds:', error);
+      return { tensions: [], whatIfs: [] };
+    }
+  }
+
+  private composePostIdeaPrompt({
+    request,
+    guidelines,
+    referenceHighlights,
+    explorationSeeds,
+    extraContext,
+    forceBold,
+  }: {
+    request: AIPromptRequest;
+    guidelines: PostGuidelines;
+    referenceHighlights: string[];
+    explorationSeeds: { tensions: string[]; whatIfs: string[] };
+    extraContext?: string;
+    forceBold: boolean;
+  }): string {
+    const guidelineSections = [
+      this.formatGuidelineSection('Recommendations', guidelines.recommendations),
+      this.formatGuidelineSection('Ideal Structures', guidelines.idealStructures),
+      this.formatGuidelineSection('Tone Tips', guidelines.toneTips),
+      this.formatGuidelineSection('Posting Times', guidelines.postingTimes),
+    ].join('\n\n');
+
+    const underrepresented = this.formatGuidelineSection(
+      'Underrepresented Angles',
+      guidelines.underrepresentedAngles ?? [],
+      4
+    );
+    const tensions = this.formatGuidelineSection('Tension Hooks', guidelines.tensionHooks ?? [], 4);
+    const sparksBlock = [
+      'Fresh Sparks:',
+      `- Tensions: ${explorationSeeds.tensions.join('; ') || 'none harvested'}`,
+      `- What-ifs: ${explorationSeeds.whatIfs.join('; ') || 'none harvested'}`,
+    ].join('\n');
+
+    const toneDirective = request.tone ? `Honor this requested tone/style: ${request.tone}` : 'Match the subreddit voice naturally.';
+    const boldDirective = forceBold
+      ? 'Your previous drafts were too safe. Pitch boundary-pushing, contrarian, or deeply personal ideas that remain respectful.'
+      : 'Blend evidence from references with imaginative twists. Surprise loyal readers without violating subreddit rules.';
+
+    return `You are an elite Reddit strategist generating conversation-starting posts for r/${request.subreddit}.
+
+Grounding data (last 14 days):
+${guidelineSections}
+
+Reference Patterns:
+${referenceHighlights.join('\n')}
+
+${underrepresented}
+
+${tensions}
+
+${sparksBlock}
+
+${extraContext ? `Additional context to weave in: ${extraContext}` : ''}
+
+${boldDirective}
+
+Produce FOUR high-variance post pitches. Requirements:
+- Cover at least three different formats (story, rant, AMA, poll, experiment, teardown, etc.)
+- At least one idea must flip a common belief observed in the references.
+- At least one idea must feel intimate (first-person confession or hard-earned lesson).
+- Explicitly cite which reference trend or spark inspired each idea, and explain what makes it novel.
+
+For every idea include EXACTLY three bullets (hook, core payoff, call-to-action) plus:
+- "format": the narrative or structural format used.
+- "noveltySignal": 1-2 sentences that highlight the fresh angle or twist.
+
+${toneDirective}
+
+Return JSON:
+{
+  "ideas": [
+    {
+      "title": "...",
+      "format": "story/poll/etc.",
+      "bullets": ["hook", "body", "cta"],
+      "inspiration": "Reference post or spark that informed it",
+      "noveltySignal": "Why this stands out from prior hits"
+    }
+  ],
+  "engagementScore": 8.5,
+  "relevance": 9.0
+}`;
   }
 
   private truncateText(text: string, maxLength = 400): string {
@@ -275,6 +632,14 @@ Do not overindex on the humor. Keep entries concise (max 2 sentences each) and s
       return clean;
     }
     return `${clean.slice(0, maxLength)}...`;
+  }
+
+  private resolveTemperature(input?: number) {
+    if (typeof input !== 'number' || Number.isNaN(input)) {
+      return 0.7;
+    }
+
+    return Math.min(1.1, Math.max(0.3, input));
   }
 }
 

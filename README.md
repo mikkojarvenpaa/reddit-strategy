@@ -103,6 +103,8 @@ reddit-strategy/
      OPENAI_API_KEY=your_openai_api_key
      # Optional: override the default model
      # OPENAI_MODEL=gpt-4o-mini
+     # Optional: lower or raise Reddit API throughput per minute (default 45)
+     # REDDIT_MAX_REQ_PER_MINUTE=45
      ```
 
 4. **Start the development server**

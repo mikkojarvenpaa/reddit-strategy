@@ -22,7 +22,7 @@ app.use('/api/reddit', redditRoutes);
 app.use('/api/ai', aiRoutes);
 
 // Health check
-app.get('/health', (req, res) => {
+app.get('/health', (_req, res) => {
   res.json({ status: 'ok' });
 });
 

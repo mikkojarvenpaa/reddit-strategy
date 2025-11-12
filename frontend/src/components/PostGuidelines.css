@@ -1,0 +1,55 @@
+.post-guidelines {
+  margin-top: 20px;
+}
+
+.post-guidelines-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+}
+
+.post-guidelines-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 16px;
+}
+
+.post-guidelines section {
+  background: #fafafa;
+  border: 1px solid #eee;
+  border-radius: 8px;
+  padding: 16px;
+}
+
+.post-guidelines section h4 {
+  margin: 0 0 10px;
+  font-size: 14px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #ff4500;
+}
+
+.post-guidelines ul {
+  margin: 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.post-guidelines li {
+  color: #444;
+  line-height: 1.4;
+}
+
+.muted {
+  color: #777;
+  font-size: 14px;
+}
+
+@media (max-width: 768px) {
+  .post-guidelines-grid {
+    grid-template-columns: 1fr;
+  }
+}

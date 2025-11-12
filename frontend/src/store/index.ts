@@ -8,8 +8,11 @@ interface SubredditData {
 }
 
 interface GeneratedIdea {
-  content: string;
-  reasoning: string;
+  title?: string;
+  content?: string;
+  reasoning?: string;
+  bullets?: string[];
+  inspiration?: string;
 }
 
 interface IdeaContext {
@@ -17,6 +20,15 @@ interface IdeaContext {
   subreddit: string;
   postId?: string;
   postTitle?: string;
+}
+
+interface PostGuidelines {
+  recommendations: string[];
+  idealStructures: string[];
+  toneTips: string[];
+  postingTimes: string[];
+  generatedAt: string;
+  subreddit?: string;
 }
 
 interface CommentInsights {
@@ -50,6 +62,9 @@ interface AppState {
 
   commentInsights: CommentInsights | null;
   setCommentInsights: (insights: CommentInsights | null) => void;
+
+  postGuidelines: PostGuidelines | null;
+  setPostGuidelines: (guidelines: PostGuidelines | null) => void;
 }
 
 export const useAppStore = create<AppState>((set) => ({
@@ -73,4 +88,7 @@ export const useAppStore = create<AppState>((set) => ({
 
   commentInsights: null,
   setCommentInsights: (insights) => set({ commentInsights: insights }),
+
+  postGuidelines: null,
+  setPostGuidelines: (guidelines) => set({ postGuidelines: guidelines }),
 }));

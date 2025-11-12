@@ -3,8 +3,8 @@ import './Card.css';
 
 interface IdeaCardProps {
   idea: {
-    content: string;
-    reasoning: string;
+    content?: string;
+    reasoning?: string;
   };
   index: number;
   type: 'post' | 'comment';
@@ -14,7 +14,7 @@ export default function IdeaCard({ idea, index, type }: IdeaCardProps) {
   const [isCopied, setIsCopied] = useState(false);
 
   const handleCopy = () => {
-    navigator.clipboard.writeText(idea.content);
+    navigator.clipboard.writeText(idea.content || '');
     setIsCopied(true);
     setTimeout(() => setIsCopied(false), 2000);
   };

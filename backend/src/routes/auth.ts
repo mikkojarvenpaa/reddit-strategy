@@ -4,12 +4,12 @@ import { asyncHandler, AppError } from '../middleware/errorHandler.js';
 const router = Router();
 
 // Health check endpoint
-router.get('/health', (req: Request, res: Response) => {
+router.get('/health', (_req: Request, res: Response) => {
   res.json({ status: 'auth service ok' });
 });
 
 // Placeholder for Reddit OAuth flow
-router.get('/reddit', (req: Request, res: Response) => {
+router.get('/reddit', (_req: Request, res: Response) => {
   const clientId = process.env.REDDIT_CLIENT_ID;
   const redirectUri = encodeURIComponent(process.env.REDDIT_REDIRECT_URI || '');
   const scope = encodeURIComponent('read submit vote');
@@ -24,7 +24,7 @@ router.get('/reddit', (req: Request, res: Response) => {
 router.get(
   '/reddit/callback',
   asyncHandler(async (req: Request, res: Response) => {
-    const { code, state } = req.query;
+    const { code } = req.query;
 
     if (!code) {
       throw new AppError(400, 'Missing authorization code');

@@ -33,6 +33,18 @@ export const aiAPI = {
   }) => api.post('/ai/generate-comment-ideas', data),
 
   getCommentInsights: (subreddit: string) => api.get(`/ai/comment-insights/${subreddit}`),
+
+  generateFullPost: (data: {
+    subreddit: string;
+    tone?: string;
+    idea: {
+      title: string;
+      bullets: string[];
+      inspiration?: string;
+    };
+    instructions?: string;
+    context?: string;
+  }) => api.post('/ai/generate-full-post', data),
 };
 
 export default api;

@@ -2,7 +2,7 @@ import { Router, Request, Response } from 'express';
 import aiService from '../services/aiService.js';
 import redditService from '../services/redditService.js';
 import { asyncHandler, AppError } from '../middleware/errorHandler.js';
-import { AIPromptRequest } from '../types/index.js';
+import { AIPromptRequest, PostIdeaExpansionRequest } from '../types/index.js';
 
 const router = Router();
 
@@ -15,21 +15,33 @@ router.post(
       throw new AppError(400, 'Subreddit is required');
     }
 
-    // Fetch current subreddit data
-    const analysis = await redditService.getSubredditData(body.subreddit);
+    // Fetch latest posting guidelines derived from top posts
+    const guidelines = await aiService.generatePostGuidelines(body.subreddit);
 
     // Generate ideas using OpenAI
-    const ideas = await aiService.generatePostIdeas(
-      body,
-      analysis.recentPosts,
-      analysis.commonTopics
-    );
+    const ideas = await aiService.generatePostIdeas(body, guidelines);
 
     res.json({
       subreddit: body.subreddit,
       type: 'post',
+      guidelines,
       ...ideas,
     });
+  })
+);
+
+router.post(
+  '/generate-full-post',
+  asyncHandler(async (req: Request, res: Response) => {
+    const body = req.body as PostIdeaExpansionRequest;
+
+    if (!body.subreddit || !body.idea?.title || !body.idea?.bullets?.length) {
+      throw new AppError(400, 'Subreddit and idea details are required');
+    }
+
+    const post = await aiService.generateFullPost(body);
+
+    res.json(post);
   })
 );
 
